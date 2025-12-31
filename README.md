@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # movielens-recommender
 Exploring how to build a recommender system using the MovieLens dataset.
 =======
@@ -65,4 +64,3 @@ Key insight: SVD prediction itself dominates feature importance, suggesting coll
 - `xgboost` - Gradient boosting
 - `pandas`, `numpy` - Data manipulation
 - `scikit-learn` - Evaluation metrics and utilities
->>>>>>> 8636485 (Added readme)
