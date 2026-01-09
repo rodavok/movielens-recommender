@@ -3,7 +3,7 @@ Exploring how to build a recommender system using the MovieLens dataset.
 =======
 # MovieLens 100K Recommender System
 
-Recommender analysis on the MovieLens 100K dataset using SVD and XGBoost.
+Recommender analysis on the MovieLens 100K dataset using ALS and XGBoost.
 
 ## Dataset
 
@@ -17,7 +17,7 @@ Additional data covering the genre and release years for each movie, plus sepera
 
 Hybrid model combining collaborative filtering and gradient boosting:
 
-1. **SVD (Matrix Factorization)** - Learns latent factors for users and items
+1. **ALS (Matrix Factorization)** - Learns latent factors for users and items
 2. **XGBoost** - Uses SVD embeddings as features to capture non-linear patterns
 
 ### Features Used
@@ -25,12 +25,12 @@ Hybrid model combining collaborative filtering and gradient boosting:
 - User latent factors (50 dimensions)
 - Item latent factors (50 dimensions)
 - Element-wise interactions between user/item factors
-- SVD prediction as a feature
+- ALS prediction as a feature
 
 ## Setup
 
 ```bash
-pip install scikit-surprise xgboost pandas numpy scikit-learn
+pip install implicit xgboost pandas numpy scikit-learn
 ```
 
 Download the dataset from Kaggle and extract to your working directory.
@@ -38,14 +38,14 @@ Download the dataset from Kaggle and extract to your working directory.
 Expected output:
 - Model performance metrics (RMSE, MAE)
 - Feature importance ranking
-- Comparison between pure SVD and hybrid approach
+- Comparison between pure ALS and hybrid approach
 - Comparison between just using user ratings, or that data combined with the genre tags and user info.
 
 ## Results
 
-The hybrid SVD + XGBoost model shows the importance of proper train/test splitting to avoid data leakage. Pure SVD typically achieves RMSE ~0.93-0.94, with XGBoost providing marginal improvements by learning non-linear interactions.
+The hybrid ALS + XGBoost model shows the importance of proper train/test splitting to avoid data leakage. Pure ALS typically achieves RMSE ~0.93-0.94, with XGBoost providing marginal improvements by learning non-linear interactions.
 
-Key insight: SVD prediction itself dominates feature importance, suggesting collaborative filtering captures most of the signal in this dataset.
+Key insight: ALS prediction itself dominates feature importance, suggesting collaborative filtering captures most of the signal in this dataset.
 
 ## Notes
 
@@ -56,7 +56,7 @@ Key insight: SVD prediction itself dominates feature importance, suggesting coll
 ## Libraries
 
 - `surprise` - Collaborative filtering algorithms - This package is out of date, and isn't supported by Kaggle anymore.
-- 
+- `implicit` - Newer library implementing ALS, an alternative to SVD. It's not included in the kaggle kernel, but it is compatible, so it just needs to be installed prior to use.
 - `xgboost` - Gradient boosting 
 - `pandas`, `numpy` - Data manipulation
 - `scikit-learn` - Evaluation metrics and utilities
