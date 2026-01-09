@@ -11,6 +11,8 @@ Recommender analysis on the MovieLens 100K dataset using SVD and XGBoost.
 
 100,000 ratings from 943 users on 1,682 movies. Ratings are 1-5 stars.
 
+Additional data covering the genre and release years for each movie, plus seperate data covering the age and location of the users.
+
 ## Approach
 
 Hybrid model combining collaborative filtering and gradient boosting:
@@ -33,18 +35,11 @@ pip install scikit-surprise xgboost pandas numpy scikit-learn
 
 Download the dataset from Kaggle and extract to your working directory.
 
-## Usage
-
-Run the main analysis:
-
-```python
-python recommender.py
-```
-
 Expected output:
 - Model performance metrics (RMSE, MAE)
 - Feature importance ranking
 - Comparison between pure SVD and hybrid approach
+- Comparison between just using user ratings, or that data combined with the genre tags and user info.
 
 ## Results
 
@@ -60,7 +55,8 @@ Key insight: SVD prediction itself dominates feature importance, suggesting coll
 
 ## Libraries
 
-- `surprise` - Collaborative filtering algorithms
-- `xgboost` - Gradient boosting
+- `surprise` - Collaborative filtering algorithms - This package is out of date, and isn't supported by Kaggle anymore.
+- 
+- `xgboost` - Gradient boosting 
 - `pandas`, `numpy` - Data manipulation
 - `scikit-learn` - Evaluation metrics and utilities
