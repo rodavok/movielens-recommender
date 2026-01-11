@@ -135,6 +135,32 @@ als.fit(user_item_matrix)
 
 print(f"Trained ALS model with {len(unique_users)} users and {len(unique_items)} items")
 
+# Calibrate ALS predictions to 1-5 scale using training data
+# Collect raw ALS predictions on training set
+train_als_raw_predictions = []
+train_actual_ratings = []
+
+for _, row in train_df.iterrows():
+    try:
+        user_idx = user_id_map[row['user_id']]
+        item_idx = item_id_map[row['item_id']]
+        raw_pred = np.dot(als.user_factors[user_idx], als.item_factors[item_idx])
+        train_als_raw_predictions.append(raw_pred)
+        train_actual_ratings.append(row['rating'])
+    except:
+        pass
+
+train_als_raw_predictions = np.array(train_als_raw_predictions)
+train_actual_ratings = np.array(train_actual_ratings)
+
+# Fit linear calibration: rating = a * raw_pred + b
+# Using least squares: minimize sum((a*x + b - y)^2)
+X_calib = np.column_stack([train_als_raw_predictions, np.ones(len(train_als_raw_predictions))])
+calib_params = np.linalg.lstsq(X_calib, train_actual_ratings, rcond=None)[0]
+als_scale, als_bias = calib_params
+
+print(f"ALS calibration parameters: scale={als_scale:.4f}, bias={als_bias:.4f}")
+
 # 4. Create movie features lookup
 movie_features_dict = create_movie_features_lookup(movie_metadata)
 print(f"Created movie features for {len(movie_features_dict)} movies")
@@ -152,15 +178,17 @@ for _, row in train_df.iterrows():
 X_train_als = np.array(X_train_als)
 y_train_als = np.array(y_train_als)
 
-# 6. Create ALS-only features for test set (Model 2)
+# 6. Create ALS-only features for test set (Model 2) and track valid indices
 X_test_als = []
 y_test_als = []
+valid_test_indices = []  # Track which test_df rows have valid features
 
-for _, row in test_df.iterrows():
+for idx, row in test_df.iterrows():
     features = get_als_features(row['user_id'], row['item_id'], als, user_id_map, item_id_map)
     if features is not None:
         X_test_als.append(features)
         y_test_als.append(row['rating'])
+        valid_test_indices.append(idx)  # Store the original index
 
 X_test_als = np.array(X_test_als)
 y_test_als = np.array(y_test_als)
@@ -222,19 +250,22 @@ xgb_enhanced.fit(X_train_enhanced, y_train_enhanced)
 # 11. Evaluate all 4 models
 results = []
 
-# Model 1: Pure ALS
+# Model 1: Pure ALS - only predict for valid test indices (with calibration)
 y_pred_als = []
-for _, row in test_df.iterrows():
+for idx in valid_test_indices:
+    row = test_df.loc[idx]
     try:
         user_idx = user_id_map[row['user_id']]
         item_idx = item_id_map[row['item_id']]
-        prediction = np.dot(als.user_factors[user_idx], als.item_factors[item_idx])
-        y_pred_als.append(prediction)
+        raw_prediction = np.dot(als.user_factors[user_idx], als.item_factors[item_idx])
+        # Apply calibration
+        calibrated_prediction = als_scale * raw_prediction + als_bias
+        y_pred_als.append(calibrated_prediction)
     except:
-        # If user/item not in training set, use global mean
+        # If user/item not in training set, use global mean (shouldn't happen for valid indices)
         y_pred_als.append(train_df['rating'].mean())
 
-y_pred_als = np.array(y_pred_als[:len(y_test_als)])
+y_pred_als = np.array(y_pred_als)
 results.append(evaluate_model(y_test_als, y_pred_als, 'Model 1: Pure ALS'))
 
 # Model 2: XGBoost + ALS Features
@@ -312,8 +343,9 @@ print(f"{'User':<6} {'Item':<6} {'Actual':<7} {'Model1':<7} {'Model2':<7} {'Mode
 print("-"*100)
 
 for i in range(min(5, len(y_test_als))):
-    user = test_df.iloc[i]['user_id']
-    item = test_df.iloc[i]['item_id']
+    idx = valid_test_indices[i]
+    user = test_df.loc[idx]['user_id']
+    item = test_df.loc[idx]['item_id']
     actual = y_test_als[i]
     pred1 = np.clip(y_pred_als[i], 1, 5)
     pred2 = np.clip(y_pred_xgb_als[i], 1, 5)
