@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import cornac
 from cornac.eval_methods import RatioSplit
-from cornac.models import MF, PMF, BPR, ItemKNN, MMMF
+from cornac.models import MF, PMF, BPR, ItemKNN, MMMF, SVD
 from cornac.data import FeatureModality
 from cornac.metrics import MAE, RMSE, Precision, Recall, NDCG, AUC, MAP
 
@@ -157,10 +157,12 @@ def run_genre_experiment(ratings, item_ids, genre_features):
 
     # Models that can leverage item features
     # ItemKNN uses features for similarity, MMMF jointly factorizes ratings and features
+    # SVD included as additional baseline
     models = [
         MF(k=50, max_iter=25, learning_rate=0.01, lambda_reg=0.02, seed=42, name="MF"),
         PMF(k=50, max_iter=100, learning_rate=0.001, lambda_reg=0.001, seed=42, name="PMF"),
         BPR(k=50, max_iter=100, learning_rate=0.01, lambda_reg=0.01, seed=42, name="BPR"),
+        SVD(k=50, max_iter=100, learning_rate=0.01, lambda_reg=0.02, seed=42, name="SVD"),
         ItemKNN(k=50, similarity='cosine', name="ItemKNN-Genre"),
         MMMF(k=50, max_iter=100, learning_rate=0.001, lambda_reg=0.01, seed=42, name="MMMF-Genre"),
     ]
