@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import cornac
 from cornac.eval_methods import RatioSplit
-from cornac.models import MF, PMF, BPR, ItemKNN, MMMF, SVD
+from cornac.models import SVD
 from cornac.data import FeatureModality
 from cornac.metrics import MAE, RMSE, Precision, Recall, NDCG, AUC, MAP
 
@@ -111,11 +111,9 @@ def run_ratings_only_experiment(ratings):
         verbose=True
     )
 
-    # Define collaborative filtering models (no side information)
+    # Define model
     models = [
-        MF(k=50, max_iter=25, learning_rate=0.01, lambda_reg=0.02, seed=42, name="MF"),
-        PMF(k=50, max_iter=100, learning_rate=0.001, lambda_reg=0.001, seed=42, name="PMF"),
-        BPR(k=50, max_iter=100, learning_rate=0.01, lambda_reg=0.01, seed=42, name="BPR"),
+        SVD(k=50, max_iter=100, learning_rate=0.01, lambda_reg=0.02, seed=42, name="SVD"),
     ]
 
     # Run experiment
@@ -155,16 +153,9 @@ def run_genre_experiment(ratings, item_ids, genre_features):
         item_feature=item_feature
     )
 
-    # Models that can leverage item features
-    # ItemKNN uses features for similarity, MMMF jointly factorizes ratings and features
-    # SVD included as additional baseline
+    # Define model
     models = [
-        MF(k=50, max_iter=25, learning_rate=0.01, lambda_reg=0.02, seed=42, name="MF"),
-        PMF(k=50, max_iter=100, learning_rate=0.001, lambda_reg=0.001, seed=42, name="PMF"),
-        BPR(k=50, max_iter=100, learning_rate=0.01, lambda_reg=0.01, seed=42, name="BPR"),
         SVD(k=50, max_iter=100, learning_rate=0.01, lambda_reg=0.02, seed=42, name="SVD"),
-        ItemKNN(k=50, similarity='cosine', name="ItemKNN-Genre"),
-        MMMF(k=50, max_iter=100, learning_rate=0.001, lambda_reg=0.01, seed=42, name="MMMF-Genre"),
     ]
 
     # Run experiment
@@ -185,11 +176,11 @@ def print_comparison(exp1, exp2):
     print("COMPARISON: Impact of Genre Information")
     print("=" * 70)
 
-    # Get common models (MF, PMF, BPR)
-    common_models = ['MF', 'PMF', 'BPR']
+    # Get common models
+    common_models = ['SVD']
     metrics_to_compare = ['NDCG@10', 'Precision@10', 'Recall@10', 'MAP', 'AUC']
 
-    print("\nCommon models (MF, PMF, BPR) - with vs without genre features:")
+    print("\nSVD - with vs without genre features:")
     print("-" * 70)
 
     for metric_name in metrics_to_compare:
@@ -223,19 +214,6 @@ def print_comparison(exp1, exp2):
                 diff_pct = (diff / val1 * 100) if val1 != 0 else 0
                 sign = '+' if diff >= 0 else ''
                 print(f"  {model_name:<10} {val1:>15.4f} {val2:>15.4f} {sign}{diff:>14.4f} ({sign}{diff_pct:.1f}%)")
-
-    # Show genre-specific models
-    print("\n" + "-" * 70)
-    print("Genre-specific models (only available with genre features):")
-    genre_models = ['ItemKNN-Genre', 'MMMF-Genre']
-
-    for result in exp2.result:
-        if result.model_name in genre_models:
-            print(f"\n{result.model_name}:")
-            for metric_key, value in result.metric_avg_results.items():
-                key_name = metric_key.name if hasattr(metric_key, 'name') else str(metric_key)
-                if key_name in metrics_to_compare:
-                    print(f"  {key_name}: {value:.4f}")
 
 
 def main():
