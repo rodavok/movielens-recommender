@@ -13,6 +13,7 @@ from cornac.models import SVD
 from cornac.metrics import MAE, RMSE, Precision, Recall, NDCG, AUC, MAP
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import RandomizedSearchCV
 
 # Data paths (Kaggle)
 DATA_PATH = '/kaggle/input/movielens-100k-dataset/ml-100k'
@@ -131,15 +132,20 @@ def build_feature_matrix_from_cornac(df, svd_model, train_set, genre_dict):
 
 
 def run_svd_experiment(ratings):
-    """Run SVD-only experiment using Cornac."""
+    """Run SVD-only experiment using Cornac.
+
+    Uses 60/20/20 split: train SVD on 60%, validate XGBoost on 20%, test both on 20%.
+    """
     print("\n" + "=" * 70)
     print("MODEL 1: SVD Only")
     print("=" * 70)
 
-    # Create evaluation method with 80/20 split
+    # Create evaluation method with 60/20/20 split (val_size is relative to remaining after test)
+    # test_size=0.2 takes 20% for test, val_size=0.25 takes 25% of remaining 80% = 20% for val
     rs = RatioSplit(
         data=ratings,
         test_size=0.2,
+        val_size=0.25,  # 25% of remaining 80% = 20% of total for validation
         rating_threshold=4.0,
         exclude_unknowns=True,
         seed=42,
@@ -162,33 +168,39 @@ def run_svd_experiment(ratings):
 
 
 def run_svd_xgboost_experiment(ratio_split, svd_model, genre_dict):
-    """Run SVD + XGBoost hybrid experiment."""
+    """Run SVD + XGBoost hybrid experiment.
+
+    XGBoost is trained on validation set (data SVD hasn't seen during training)
+    and evaluated on test set (same as SVD evaluation).
+    """
     print("\n" + "=" * 70)
     print("MODEL 2: SVD + XGBoost (Hybrid)")
     print("=" * 70)
 
     train_set = ratio_split.train_set
+    val_set = ratio_split.val_set
     test_set = ratio_split.test_set
 
-    # Build feature matrices from Cornac's train/test sets
+    # Build feature matrices from Cornac's val/test sets
     print("\nBuilding feature matrices from SVD embeddings + genres...")
+    print("  (XGBoost trains on validation set - data SVD hasn't seen)")
 
     # Create reverse mappings (index -> original ID)
     idx_to_uid = {idx: uid for uid, idx in train_set.uid_map.items()}
     idx_to_iid = {idx: iid for iid, idx in train_set.iid_map.items()}
 
-    # Extract train data
-    train_user_indices, train_item_indices, train_ratings = train_set.uir_tuple
-    train_uids = [idx_to_uid[i] for i in train_user_indices]
-    train_iids = [idx_to_iid[i] for i in train_item_indices]
+    # Extract validation data for XGBoost training
+    val_user_indices, val_item_indices, val_ratings = val_set.uir_tuple
+    val_uids = [idx_to_uid.get(i, None) for i in val_user_indices]
+    val_iids = [idx_to_iid.get(i, None) for i in val_item_indices]
 
-    train_df = pd.DataFrame({
-        'user_id': train_uids,
-        'item_id': train_iids,
-        'rating': train_ratings
+    val_df = pd.DataFrame({
+        'user_id': val_uids,
+        'item_id': val_iids,
+        'rating': val_ratings
     })
 
-    # Extract test data - use train_set mappings since test uses same ID space
+    # Extract test data for evaluation
     test_user_indices, test_item_indices, test_ratings = test_set.uir_tuple
     test_uids = [idx_to_uid.get(i, None) for i in test_user_indices]
     test_iids = [idx_to_iid.get(i, None) for i in test_item_indices]
@@ -199,24 +211,46 @@ def run_svd_xgboost_experiment(ratio_split, svd_model, genre_dict):
         'rating': test_ratings
     })
 
-    X_train = build_feature_matrix_from_cornac(train_df, svd_model, train_set, genre_dict)
-    y_train = train_df['rating'].values
+    # XGBoost trains on validation set, tests on test set
+    X_train = build_feature_matrix_from_cornac(val_df, svd_model, train_set, genre_dict)
+    y_train = val_df['rating'].values
     X_test = build_feature_matrix_from_cornac(test_df, svd_model, train_set, genre_dict)
     y_test = test_df['rating'].values
 
-    print(f"  Train features: {X_train.shape}")
-    print(f"  Test features: {X_test.shape}")
+    print(f"  XGBoost train (validation set): {X_train.shape}")
+    print(f"  XGBoost test: {X_test.shape}")
 
-    # Train XGBoost
-    print("\nTraining XGBoost on SVD embeddings + genre features...")
-    xgb_model = XGBRegressor(
-        n_estimators=100,
-        max_depth=6,
-        learning_rate=0.1,
+    # Hyperparameter tuning for XGBoost
+    print("\nTuning XGBoost hyperparameters...")
+
+    param_dist = {
+        'n_estimators': [50, 100, 200, 300],
+        'max_depth': [3, 4, 5, 6, 8, 10],
+        'learning_rate': [0.01, 0.05, 0.1, 0.2],
+        'min_child_weight': [1, 3, 5],
+        'subsample': [0.7, 0.8, 0.9, 1.0],
+        'colsample_bytree': [0.7, 0.8, 0.9, 1.0],
+        'gamma': [0, 0.1, 0.2],
+    }
+
+    base_model = XGBRegressor(random_state=42, n_jobs=-1)
+
+    search = RandomizedSearchCV(
+        base_model,
+        param_distributions=param_dist,
+        n_iter=50,
+        cv=3,
+        scoring='neg_mean_absolute_error',
         random_state=42,
+        verbose=1,
         n_jobs=-1
     )
-    xgb_model.fit(X_train, y_train)
+    search.fit(X_train, y_train)
+
+    print(f"\nBest parameters: {search.best_params_}")
+    print(f"Best CV MAE: {-search.best_score_:.4f}")
+
+    xgb_model = search.best_estimator_
 
     # Predict
     y_pred = xgb_model.predict(X_test)
