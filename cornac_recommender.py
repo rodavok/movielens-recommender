@@ -1,9 +1,8 @@
 """
-MovieLens Recommender using Cornac
+MovieLens Recommender using Cornac + XGBoost
 
-A collaborative filtering recommender system using the Cornac framework.
+A hybrid recommender system comparing SVD alone vs SVD + XGBoost.
 Uses MovieLens 100K dataset from Kaggle.
-Compares models with and without genre information.
 """
 
 import pandas as pd
@@ -11,8 +10,9 @@ import numpy as np
 import cornac
 from cornac.eval_methods import RatioSplit
 from cornac.models import SVD
-from cornac.data import FeatureModality
 from cornac.metrics import MAE, RMSE, Precision, Recall, NDCG, AUC, MAP
+from xgboost import XGBRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # Data paths (Kaggle)
 DATA_PATH = '/kaggle/input/movielens-100k-dataset/ml-100k'
@@ -94,14 +94,49 @@ def get_metrics():
     ]
 
 
-def run_ratings_only_experiment(ratings):
-    """Run experiment using only user-movie ratings (no genre info)."""
+def get_svd_factors(svd_model):
+    """Get user and item factor matrices from SVD model."""
+    # Cornac SVD uses u_factors and i_factors
+    return svd_model.u_factors, svd_model.i_factors
+
+
+def build_feature_matrix_from_cornac(df, svd_model, train_set, genre_dict):
+    """Build feature matrix from SVD embeddings and genre features."""
+    user_factors_matrix, item_factors_matrix = get_svd_factors(svd_model)
+
+    features = []
+    for _, row in df.iterrows():
+        user_id = row['user_id']
+        item_id = row['item_id']
+
+        # Get SVD embeddings using Cornac's internal indices
+        try:
+            user_idx = train_set.uid_map[user_id]
+            item_idx = train_set.iid_map[item_id]
+            user_factors = user_factors_matrix[user_idx]
+            item_factors = item_factors_matrix[item_idx]
+        except (KeyError, IndexError):
+            # Unknown user or item - use zeros
+            user_factors = np.zeros(svd_model.k)
+            item_factors = np.zeros(svd_model.k)
+
+        # Get genre features
+        genre_feats = genre_dict.get(item_id, np.zeros(19))
+
+        # Combine: user factors + item factors + genres
+        feat = np.concatenate([user_factors, item_factors, genre_feats])
+        features.append(feat)
+
+    return np.array(features)
+
+
+def run_svd_experiment(ratings):
+    """Run SVD-only experiment using Cornac."""
     print("\n" + "=" * 70)
-    print("EXPERIMENT 1: Ratings Only (Collaborative Filtering)")
+    print("MODEL 1: SVD Only")
     print("=" * 70)
 
-    # Split data
-    print("\nSplitting data (80/20)...")
+    # Create evaluation method with 80/20 split
     rs = RatioSplit(
         data=ratings,
         test_size=0.2,
@@ -111,109 +146,122 @@ def run_ratings_only_experiment(ratings):
         verbose=True
     )
 
-    # Define model
-    models = [
-        SVD(k=50, max_iter=100, learning_rate=0.01, lambda_reg=0.02, seed=42, name="SVD"),
-    ]
+    # Train SVD
+    svd_model = SVD(k=50, max_iter=100, learning_rate=0.01, lambda_reg=0.02, seed=42, name="SVD")
 
-    # Run experiment
-    print("\nRunning experiment (ratings only)...")
+    print("\nTraining SVD...")
     exp = cornac.Experiment(
         eval_method=rs,
-        models=models,
+        models=[svd_model],
         metrics=get_metrics(),
         user_based=True,
     )
     exp.run()
-    return exp
+
+    return exp, svd_model, rs
 
 
-def run_genre_experiment(ratings, item_ids, genre_features):
-    """Run experiment using ratings + genre information."""
+def run_svd_xgboost_experiment(ratio_split, svd_model, genre_dict):
+    """Run SVD + XGBoost hybrid experiment."""
     print("\n" + "=" * 70)
-    print("EXPERIMENT 2: Ratings + Genre Information")
+    print("MODEL 2: SVD + XGBoost (Hybrid)")
     print("=" * 70)
 
-    # Create item feature modality for genre information
-    item_feature = FeatureModality(
-        features=genre_features,
-        ids=item_ids,
-        normalize=True
+    train_set = ratio_split.train_set
+    test_set = ratio_split.test_set
+
+    # Build feature matrices from Cornac's train/test sets
+    print("\nBuilding feature matrices from SVD embeddings + genres...")
+
+    # Create reverse mappings (index -> original ID)
+    idx_to_uid = {idx: uid for uid, idx in train_set.uid_map.items()}
+    idx_to_iid = {idx: iid for iid, idx in train_set.iid_map.items()}
+
+    # Extract train data
+    train_user_indices, train_item_indices, train_ratings = train_set.uir_tuple
+    train_uids = [idx_to_uid[i] for i in train_user_indices]
+    train_iids = [idx_to_iid[i] for i in train_item_indices]
+
+    train_df = pd.DataFrame({
+        'user_id': train_uids,
+        'item_id': train_iids,
+        'rating': train_ratings
+    })
+
+    # Extract test data - use train_set mappings since test uses same ID space
+    test_user_indices, test_item_indices, test_ratings = test_set.uir_tuple
+    test_uids = [idx_to_uid.get(i, None) for i in test_user_indices]
+    test_iids = [idx_to_iid.get(i, None) for i in test_item_indices]
+
+    test_df = pd.DataFrame({
+        'user_id': test_uids,
+        'item_id': test_iids,
+        'rating': test_ratings
+    })
+
+    X_train = build_feature_matrix_from_cornac(train_df, svd_model, train_set, genre_dict)
+    y_train = train_df['rating'].values
+    X_test = build_feature_matrix_from_cornac(test_df, svd_model, train_set, genre_dict)
+    y_test = test_df['rating'].values
+
+    print(f"  Train features: {X_train.shape}")
+    print(f"  Test features: {X_test.shape}")
+
+    # Train XGBoost
+    print("\nTraining XGBoost on SVD embeddings + genre features...")
+    xgb_model = XGBRegressor(
+        n_estimators=100,
+        max_depth=6,
+        learning_rate=0.1,
+        random_state=42,
+        n_jobs=-1
     )
+    xgb_model.fit(X_train, y_train)
 
-    # Split data with item features
-    print("\nSplitting data (80/20) with genre features...")
-    rs = RatioSplit(
-        data=ratings,
-        test_size=0.2,
-        rating_threshold=4.0,
-        exclude_unknowns=True,
-        seed=42,
-        verbose=True,
-        item_feature=item_feature
-    )
+    # Predict
+    y_pred = xgb_model.predict(X_test)
+    y_pred = np.clip(y_pred, 1, 5)  # Clip to valid rating range
 
-    # Define model
-    models = [
-        SVD(k=50, max_iter=100, learning_rate=0.01, lambda_reg=0.02, seed=42, name="SVD"),
-    ]
+    # Calculate metrics
+    mae = mean_absolute_error(y_test, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 
-    # Run experiment
-    print("\nRunning experiment (with genre features)...")
-    exp = cornac.Experiment(
-        eval_method=rs,
-        models=models,
-        metrics=get_metrics(),
-        user_based=True,
-    )
-    exp.run()
-    return exp
+    print(f"\nSVD + XGBoost Results:")
+    print(f"  MAE:  {mae:.4f}")
+    print(f"  RMSE: {rmse:.4f}")
+
+    return {'MAE': mae, 'RMSE': rmse, 'model': xgb_model}
 
 
-def print_comparison(exp1, exp2):
-    """Print side-by-side comparison of two experiments."""
+def print_comparison(svd_exp, xgb_results):
+    """Print side-by-side comparison of SVD vs SVD+XGBoost."""
     print("\n" + "=" * 70)
-    print("COMPARISON: Impact of Genre Information")
+    print("COMPARISON: SVD vs SVD + XGBoost")
     print("=" * 70)
 
-    # Get common models
-    common_models = ['SVD']
-    metrics_to_compare = ['NDCG@10', 'Precision@10', 'Recall@10', 'MAP', 'AUC']
+    # Extract SVD metrics
+    svd_result = svd_exp.result[0]
+    svd_metrics = {}
+    for metric_key, value in svd_result.metric_avg_results.items():
+        key_name = metric_key.name if hasattr(metric_key, 'name') else str(metric_key)
+        svd_metrics[key_name] = value
 
-    print("\nSVD - with vs without genre features:")
-    print("-" * 70)
+    print(f"\n{'Metric':<15} {'SVD':>12} {'SVD+XGBoost':>12} {'Difference':>15}")
+    print(f"{'-'*15} {'-'*12} {'-'*12} {'-'*15}")
 
-    for metric_name in metrics_to_compare:
-        print(f"\n{metric_name}:")
-        print(f"  {'Model':<10} {'Ratings Only':>15} {'With Genre':>15} {'Difference':>15}")
-        print(f"  {'-'*10} {'-'*15} {'-'*15} {'-'*15}")
+    # Compare rating prediction metrics
+    for metric in ['MAE', 'RMSE']:
+        svd_val = svd_metrics.get(metric, 0)
+        xgb_val = xgb_results.get(metric, 0)
+        diff = xgb_val - svd_val
+        diff_pct = (diff / svd_val * 100) if svd_val != 0 else 0
+        sign = '+' if diff >= 0 else ''
+        # For MAE/RMSE, lower is better
+        better = "worse" if diff > 0 else "better"
+        print(f"{metric:<15} {svd_val:>12.4f} {xgb_val:>12.4f} {sign}{diff:>14.4f} ({better})")
 
-        for model_name in common_models:
-            # Find results in both experiments
-            val1 = None
-            val2 = None
-
-            for result in exp1.result:
-                if result.model_name == model_name:
-                    for metric_key, value in result.metric_avg_results.items():
-                        key_name = metric_key.name if hasattr(metric_key, 'name') else str(metric_key)
-                        if key_name == metric_name:
-                            val1 = value
-                            break
-
-            for result in exp2.result:
-                if result.model_name == model_name:
-                    for metric_key, value in result.metric_avg_results.items():
-                        key_name = metric_key.name if hasattr(metric_key, 'name') else str(metric_key)
-                        if key_name == metric_name:
-                            val2 = value
-                            break
-
-            if val1 is not None and val2 is not None:
-                diff = val2 - val1
-                diff_pct = (diff / val1 * 100) if val1 != 0 else 0
-                sign = '+' if diff >= 0 else ''
-                print(f"  {model_name:<10} {val1:>15.4f} {val2:>15.4f} {sign}{diff:>14.4f} ({sign}{diff_pct:.1f}%)")
+    print("\n(Note: For MAE/RMSE, lower values are better)")
+    print("(SVD+XGBoost uses SVD embeddings + genre features as input to XGBoost)")
 
 
 def main():
@@ -224,12 +272,17 @@ def main():
     # Load genre information
     item_ids, genre_features = load_item_genres()
 
-    # Run both experiments
-    exp1 = run_ratings_only_experiment(ratings)
-    exp2 = run_genre_experiment(ratings, item_ids, genre_features)
+    # Create genre dictionary for quick lookup
+    genre_dict = {item_id: genre_features[i] for i, item_id in enumerate(item_ids)}
+
+    # Run SVD experiment (handles its own train/test split)
+    svd_exp, svd_model, ratio_split = run_svd_experiment(ratings)
+
+    # Run SVD + XGBoost experiment (uses same split from ratio_split)
+    xgb_results = run_svd_xgboost_experiment(ratio_split, svd_model, genre_dict)
 
     # Print comparison
-    print_comparison(exp1, exp2)
+    print_comparison(svd_exp, xgb_results)
 
 
 if __name__ == "__main__":
